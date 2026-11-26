@@ -9,15 +9,8 @@ import type { ReactNode } from "react";
 ========================================= */
 
 type SoundType =
-  | "move"
-  | "eat"
-  | "merge"
-  | "match"
-  | "wrong"
-  | "win"
-  | "lose"
-  | "flip"
-  | "click";
+  | "move" | "eat" | "merge" | "match"
+  | "wrong" | "win" | "lose" | "flip" | "click";
 
 let arcadeAudio: AudioContext | null = null;
 
@@ -36,10 +29,7 @@ function playArcadeSound(type: SoundType) {
     }
 
     const context = arcadeAudio;
-
-    if (context.state === "suspended") {
-      context.resume().catch(() => {});
-    }
+    if (context.state === "suspended") context.resume().catch(() => {});
 
     const patterns: Record<
       SoundType,
@@ -65,7 +55,6 @@ function playArcadeSound(type: SoundType) {
 
       oscillator.type = pattern.wave || "sine";
       oscillator.frequency.setValueAtTime(frequency, start);
-
       gain.gain.setValueAtTime(0.0001, start);
       gain.gain.exponentialRampToValueAtTime(0.12, start + 0.015);
       gain.gain.exponentialRampToValueAtTime(
@@ -75,12 +64,11 @@ function playArcadeSound(type: SoundType) {
 
       oscillator.connect(gain);
       gain.connect(context.destination);
-
       oscillator.start(start);
       oscillator.stop(start + pattern.duration + 0.02);
     });
   } catch {
-    // Audio is optional; the game continues without it.
+    // Audio is optional.
   }
 }
 
@@ -165,6 +153,140 @@ function ActionButton({
 }
 
 /* =========================================
+   GAME STARS — CLOUDFLARE API
+========================================= */
+
+type GameId = "snake" | "tic" | "2048" | "memory";
+
+const STAR_API = process.env.NEXT_PUBLIC_ARCADE_API_URL || "";
+
+function getVisitorId() {
+  const key = "miniarcade-visitor-id";
+  let visitorId = localStorage.getItem(key);
+
+  if (!visitorId) {
+    visitorId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `visitor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    localStorage.setItem(key, visitorId);
+  }
+
+  return visitorId;
+}
+
+function GameStarButton({ gameId }: { gameId: GameId }) {
+  const [count, setCount] = useState(0);
+  const [starred, setStarred] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadStars() {
+      if (!STAR_API) {
+        setLoading(false);
+        setError("API not configured");
+        return;
+      }
+
+      try {
+        const visitorId = getVisitorId();
+        const response = await fetch(
+          `${STAR_API.replace(/\/$/, "")}/api/stars?visitorId=${encodeURIComponent(visitorId)}`
+        );
+
+        if (!response.ok) throw new Error("Could not load stars");
+
+        const data = await response.json();
+
+        if (!cancelled) {
+          setCount(Number(data.counts?.[gameId] || 0));
+          setStarred(Boolean(data.starred?.[gameId]));
+        }
+      } catch {
+        if (!cancelled) setError("Stars unavailable");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    loadStars();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gameId]);
+
+  async function addStar() {
+    if (starred || saving || !STAR_API) return;
+
+    setSaving(true);
+    setError("");
+
+    try {
+      const visitorId = getVisitorId();
+
+      const response = await fetch(
+        `${STAR_API.replace(/\/$/, "")}/api/stars`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gameId, visitorId }),
+        }
+      );
+
+      if (!response.ok) throw new Error("Could not save star");
+
+      const data = await response.json();
+
+      setCount(Number(data.count ?? count));
+      setStarred(Boolean(data.starred));
+    } catch {
+      setError("Try again");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1 shrink-0">
+      <button
+        type="button"
+        onClick={addStar}
+        disabled={starred || saving || loading || !STAR_API}
+        aria-label={starred ? "Already starred" : "Star this game"}
+        title={
+          !STAR_API
+            ? "Configure the Cloudflare API URL"
+            : starred
+            ? "You already starred this game"
+            : "Star this game"
+        }
+        className={`min-w-[66px] rounded-xl border px-3 py-2.5 transition active:scale-95 ${
+          starred
+            ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300"
+            : "border-white/10 bg-black/20 text-gray-300 hover:border-yellow-400/50 hover:text-yellow-300"
+        } disabled:cursor-default`}
+      >
+        <span className="block text-xl leading-5">
+          {starred ? "★" : "☆"}
+        </span>
+        <span className="block text-[10px] font-bold mt-1">
+          {loading ? "..." : saving ? "..." : count}
+        </span>
+      </button>
+      <span className="text-[9px] text-gray-500">
+        {error || (starred ? "STARRED" : "STARS")}
+      </span>
+    </div>
+  );
+}
+
+/* =========================================
    SNAKE GAME
 ========================================= */
 
@@ -224,9 +346,7 @@ function SnakeGame() {
 
   const turn = (next: Point) => {
     const current = direction.current;
-
     if (next.x + current.x === 0 && next.y + current.y === 0) return;
-
     nextDirection.current = next;
     setStarted(true);
     setPaused(false);
@@ -303,40 +423,28 @@ function SnakeGame() {
     return () => clearInterval(timer);
   }, [started, paused, game.over, game.score]);
 
-  // Eating and losing sounds
   const previousScore = useRef(0);
   const previousOver = useRef(false);
 
   useEffect(() => {
-    if (game.score > previousScore.current) {
-      playArcadeSound("eat");
-    }
-
+    if (game.score > previousScore.current) playArcadeSound("eat");
     previousScore.current = game.score;
   }, [game.score]);
 
   useEffect(() => {
-    if (game.over && !previousOver.current) {
-      playArcadeSound("lose");
-    }
-
+    if (game.over && !previousOver.current) playArcadeSound("lose");
     previousOver.current = game.over;
   }, [game.over]);
 
-  // Every 100 points: celebration sound and popup
   useEffect(() => {
     const currentMilestone = Math.floor(game.score / 100);
 
     if (currentMilestone > lastMilestone.current) {
       lastMilestone.current = currentMilestone;
-
       setMilestone(`GOOD! +${currentMilestone * 100}`);
       playArcadeSound("win");
 
-      const timer = setTimeout(() => {
-        setMilestone("");
-      }, 1600);
-
+      const timer = setTimeout(() => setMilestone(""), 1600);
       return () => clearTimeout(timer);
     }
   }, [game.score]);
@@ -362,9 +470,7 @@ function SnakeGame() {
       <div className="relative rounded-2xl border border-cyan-400/20 bg-[#050d12] p-2 shadow-[0_0_45px_rgba(34,211,238,0.07)]">
         <div
           className="grid gap-[2px]"
-          style={{
-            gridTemplateColumns: `repeat(${GRID}, minmax(0, 1fr))`,
-          }}
+          style={{ gridTemplateColumns: `repeat(${GRID}, minmax(0, 1fr))` }}
         >
           {Array.from({ length: GRID * GRID }, (_, i) => {
             const x = i % GRID;
@@ -393,11 +499,7 @@ function SnakeGame() {
         {(!started || paused || game.over) && (
           <div className="absolute inset-0 bg-[#02070dcc] backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center text-center p-5">
             <p className="text-cyan-400 text-xs tracking-[0.3em] font-bold">
-              {game.over
-                ? "MISSION FAILED"
-                : paused
-                ? "GAME PAUSED"
-                : "READY PLAYER"}
+              {game.over ? "MISSION FAILED" : paused ? "GAME PAUSED" : "READY PLAYER"}
             </p>
             <h3 className="text-3xl font-black mt-3">
               {game.over ? "GAME OVER" : paused ? "PAUSED" : "SNAKE"}
@@ -422,7 +524,6 @@ function SnakeGame() {
         )}
       </div>
 
-      {/* MILESTONE POPUP */}
       <div className="h-14 flex items-center justify-center">
         {milestone && (
           <div className="animate-bounce rounded-full border border-cyan-400/40 bg-cyan-400/10 px-7 py-2 text-cyan-300 font-black tracking-widest shadow-[0_0_25px_rgba(34,211,238,0.25)]">
@@ -474,7 +575,6 @@ function winnerOf(board: string[]) {
 
 function minimax(board: string[], computer: boolean): number {
   const winner = winnerOf(board);
-
   if (winner === "O") return 10;
   if (winner === "X") return -10;
   if (board.every(Boolean)) return 0;
@@ -507,9 +607,7 @@ function minimax(board: string[], computer: boolean): number {
 }
 
 function computerMove(board: string[], level: string) {
-  const empty = board
-    .map((v, i) => (!v ? i : -1))
-    .filter((i) => i >= 0);
+  const empty = board.map((v, i) => (!v ? i : -1)).filter((i) => i >= 0);
 
   if (level === "easy") {
     return empty[Math.floor(Math.random() * empty.length)];
@@ -553,10 +651,8 @@ function TicTacToe() {
     const timer = setTimeout(() => {
       setBoard((prev) => {
         if (winnerOf(prev) || prev.every(Boolean)) return prev;
-
         const next = [...prev];
         const move = computerMove(next, level);
-
         if (move !== undefined) next[move] = "O";
         return next;
       });
@@ -572,7 +668,6 @@ function TicTacToe() {
 
     const key = board.join("") + (winner || "draw");
     if (counted.current === key) return;
-
     counted.current = key;
 
     setScores((s) => ({
@@ -592,9 +687,7 @@ function TicTacToe() {
     setBoard(next);
     playArcadeSound("click");
 
-    if (!winnerOf(next) && !next.every(Boolean)) {
-      setThinking(true);
-    }
+    if (!winnerOf(next) && !next.every(Boolean)) setThinking(true);
   }
 
   function reset() {
@@ -633,15 +726,7 @@ function TicTacToe() {
       <div className="rounded-3xl bg-gradient-to-br from-[#111d31] to-[#171020] p-4 sm:p-6 border border-violet-400/20">
         <div className="text-center mb-5">
           <p className="text-xs tracking-[0.2em] font-bold text-violet-300">
-            {winner === "X"
-              ? "YOU WIN!"
-              : winner === "O"
-              ? "CPU WINS!"
-              : draw
-              ? "DRAW GAME"
-              : thinking
-              ? "CPU IS THINKING..."
-              : "YOUR TURN"}
+            {winner === "X" ? "YOU WIN!" : winner === "O" ? "CPU WINS!" : draw ? "DRAW GAME" : thinking ? "CPU IS THINKING..." : "YOUR TURN"}
           </p>
         </div>
 
@@ -653,9 +738,7 @@ function TicTacToe() {
               disabled={!!v || finished || thinking}
               className="aspect-square rounded-2xl bg-white/[0.045] border border-white/10 hover:bg-violet-400/10 transition text-5xl sm:text-6xl font-black disabled:cursor-default"
             >
-              <span className={v === "X" ? "text-cyan-400" : "text-fuchsia-400"}>
-                {v}
-              </span>
+              <span className={v === "X" ? "text-cyan-400" : "text-fuchsia-400"}>{v}</span>
             </button>
           ))}
         </div>
@@ -689,9 +772,7 @@ type State2048 = {
 };
 
 function addTile(cells: number[]) {
-  const empty = cells
-    .map((v, i) => (v === 0 ? i : -1))
-    .filter((i) => i >= 0);
+  const empty = cells.map((v, i) => (v === 0 ? i : -1)).filter((i) => i >= 0);
 
   if (empty.length) {
     const i = empty[Math.floor(Math.random() * empty.length)];
@@ -727,7 +808,6 @@ function slideLine(line: number[]) {
   }
 
   while (result.length < 4) result.push(0);
-
   return { result, gained };
 }
 
@@ -777,43 +857,31 @@ function Game2048() {
     setBest(Number(localStorage.getItem("ma-2048-best") || 0));
   }, []);
 
-  const move = useCallback(
-    (dir: string) => {
-      setGame((prev) => {
-        if (prev.over || (prev.won && !keep)) return prev;
+  const move = useCallback((dir: string) => {
+    setGame((prev) => {
+      if (prev.over || (prev.won && !keep)) return prev;
 
-        const moved = shift2048(prev.cells, dir);
+      const moved = shift2048(prev.cells, dir);
+      if (moved.cells.every((v, i) => v === prev.cells[i])) return prev;
 
-        if (moved.cells.every((v, i) => v === prev.cells[i])) {
-          return prev;
-        }
+      const cells = addTile(moved.cells);
+      const score = prev.score + moved.score;
+      if (moved.score > 0) playArcadeSound("merge");
 
-        const cells = addTile(moved.cells);
-        const score = prev.score + moved.score;
-
-        if (moved.score > 0) playArcadeSound("merge");
-
-        return {
-          cells,
-          score,
-          won: prev.won || cells.includes(2048),
-          over: boardOver(cells),
-        };
-      });
-    },
-    [keep]
-  );
+      return {
+        cells,
+        score,
+        won: prev.won || cells.includes(2048),
+        over: boardOver(cells),
+      };
+    });
+  }, [keep]);
 
   useEffect(() => {
     const keys: Record<string, string> = {
-      ArrowLeft: "left",
-      ArrowRight: "right",
-      ArrowUp: "up",
-      ArrowDown: "down",
-      a: "left",
-      d: "right",
-      w: "up",
-      s: "down",
+      ArrowLeft: "left", ArrowRight: "right",
+      ArrowUp: "up", ArrowDown: "down",
+      a: "left", d: "right", w: "up", s: "down",
     };
 
     const handler = (e: KeyboardEvent) => {
@@ -862,10 +930,7 @@ function Game2048() {
 
       <div
         onTouchStart={(e) => {
-          touch.current = {
-            x: e.touches[0].clientX,
-            y: e.touches[0].clientY,
-          };
+          touch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         }}
         onTouchEnd={(e) => {
           if (!touch.current) return;
@@ -889,9 +954,7 @@ function Game2048() {
           {game.cells.map((v, i) => (
             <div
               key={i}
-              className={`aspect-square rounded-xl flex items-center justify-center font-black text-xl sm:text-3xl transition-all duration-150 ${
-                palette[v] || "bg-cyan-400 text-black"
-              }`}
+              className={`aspect-square rounded-xl flex items-center justify-center font-black text-xl sm:text-3xl transition-all duration-150 ${palette[v] || "bg-cyan-400 text-black"}`}
             >
               {v || ""}
             </div>
@@ -902,22 +965,15 @@ function Game2048() {
       {game.won && !keep && (
         <div className="mt-4 rounded-2xl bg-cyan-400/10 border border-cyan-400/30 p-4 text-center">
           <p className="text-cyan-300 font-black text-xl">2048 REACHED!</p>
-          <button
-            onClick={() => setKeep(true)}
-            className="underline text-sm mt-2"
-          >
+          <button onClick={() => setKeep(true)} className="underline text-sm mt-2">
             Continue playing
           </button>
         </div>
       )}
 
-      {game.over && (
-        <p className="text-red-400 font-bold text-center mt-4">GAME OVER</p>
-      )}
+      {game.over && <p className="text-red-400 font-bold text-center mt-4">GAME OVER</p>}
 
-      <p className="text-gray-500 text-xs text-center mt-5">
-        SWIPE OR USE ARROW KEYS / WASD
-      </p>
+      <p className="text-gray-500 text-xs text-center mt-5">SWIPE OR USE ARROW KEYS / WASD</p>
 
       <div className="grid grid-cols-3 gap-2 max-w-[190px] mx-auto mt-4">
         <span />
@@ -948,40 +1004,29 @@ function Game2048() {
 ========================================= */
 
 const PHOTO_POOL = [
-  // PEOPLE
   { id: "person1", category: "PEOPLE", url: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&h=400&fit=crop" },
   { id: "person2", category: "PEOPLE", url: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&h=400&fit=crop" },
   { id: "person3", category: "PEOPLE", url: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=400&h=400&fit=crop" },
   { id: "person4", category: "PEOPLE", url: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&h=400&fit=crop" },
   { id: "person5", category: "PEOPLE", url: "https://images.unsplash.com/photo-1504593811423-6dd665756598?w=400&h=400&fit=crop" },
-
-  // BUILDINGS
   { id: "building1", category: "BUILDINGS", url: "https://images.unsplash.com/photo-1487958449943-2429e8be8625?w=400&h=400&fit=crop" },
   { id: "building2", category: "BUILDINGS", url: "https://images.unsplash.com/photo-1511818966892-d7d671e672a2?w=400&h=400&fit=crop" },
   { id: "building3", category: "BUILDINGS", url: "https://images.unsplash.com/photo-1518005020951-eccb494ad742?w=400&h=400&fit=crop" },
   { id: "building4", category: "BUILDINGS", url: "https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=400&h=400&fit=crop" },
-
-  // ANIMALS
   { id: "cat", category: "ANIMALS", url: "https://images.unsplash.com/photo-1573865526739-10659fec78a5?w=400&h=400&fit=crop" },
   { id: "dog", category: "ANIMALS", url: "https://images.unsplash.com/photo-1552053831-71594a27632d?w=400&h=400&fit=crop" },
   { id: "fox", category: "ANIMALS", url: "https://images.unsplash.com/photo-1474511320723-9a56873867b5?w=400&h=400&fit=crop" },
   { id: "panda", category: "ANIMALS", url: "https://images.unsplash.com/photo-1564349683136-77e08dba1ef7?w=400&h=400&fit=crop" },
   { id: "lion", category: "ANIMALS", url: "https://images.unsplash.com/photo-1546182990-dffeafbe841d?w=400&h=400&fit=crop" },
   { id: "elephant", category: "ANIMALS", url: "https://images.unsplash.com/photo-1557050543-4d5f4e07ef46?w=400&h=400&fit=crop" },
-
-  // SPACE
   { id: "space1", category: "SPACE", url: "https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=400&h=400&fit=crop" },
   { id: "space2", category: "SPACE", url: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=400&h=400&fit=crop" },
   { id: "space3", category: "SPACE", url: "https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=400&h=400&fit=crop" },
   { id: "space4", category: "SPACE", url: "https://images.unsplash.com/photo-1464802686167-b939a6910659?w=400&h=400&fit=crop" },
-
-  // PLACES
   { id: "place1", category: "PLACES", url: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=400&h=400&fit=crop" },
   { id: "place2", category: "PLACES", url: "https://images.unsplash.com/photo-1519608487953-e999c86e7455?w=400&h=400&fit=crop" },
   { id: "place3", category: "PLACES", url: "https://images.unsplash.com/photo-1470770841072-f978cf4d019e?w=400&h=400&fit=crop" },
   { id: "place4", category: "PLACES", url: "https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=400&h=400&fit=crop" },
-
-  // BOOKS AND OBJECTS
   { id: "book1", category: "BOOKS", url: "https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=400&h=400&fit=crop" },
   { id: "book2", category: "BOOKS", url: "https://images.unsplash.com/photo-1512820790803-83ca734da794?w=400&h=400&fit=crop" },
   { id: "camera", category: "OBJECTS", url: "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?w=400&h=400&fit=crop" },
@@ -1034,10 +1079,7 @@ function MemoryGame() {
   useEffect(() => {
     if (!started || won) return;
 
-    const timer = setInterval(() => {
-      setSeconds((s) => s + 1);
-    }, 1000);
-
+    const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
     return () => clearInterval(timer);
   }, [started, won]);
 
@@ -1052,7 +1094,6 @@ function MemoryGame() {
       playArcadeSound("match");
     } else {
       playArcadeSound("wrong");
-
       const timer = setTimeout(() => setOpened([]), 900);
       return () => clearTimeout(timer);
     }
@@ -1068,17 +1109,12 @@ function MemoryGame() {
       opened.includes(i) ||
       matched.includes(cards[i].pair) ||
       won
-    ) {
-      return;
-    }
+    ) return;
 
     setStarted(true);
     playArcadeSound("flip");
 
-    if (opened.length === 1) {
-      setMoves((m) => m + 1);
-    }
-
+    if (opened.length === 1) setMoves((m) => m + 1);
     setOpened((prev) => [...prev, i]);
   }
 
@@ -1096,10 +1132,7 @@ function MemoryGame() {
 
   return (
     <div className="w-full max-w-2xl mx-auto p-4 sm:p-7">
-      <GameHeading
-        title="MEMORY LAB"
-        subtitle="People, places, animals and everything in between."
-      />
+      <GameHeading title="MEMORY LAB" subtitle="People, places, animals and everything in between." />
 
       <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-5">
         <Stat label="MOVES" value={moves} />
@@ -1120,8 +1153,7 @@ function MemoryGame() {
 
       <div className="grid grid-cols-4 gap-2 sm:gap-3">
         {cards.map((card, i) => {
-          const visible =
-            opened.includes(i) || matched.includes(card.pair);
+          const visible = opened.includes(i) || matched.includes(card.pair);
 
           return (
             <button
@@ -1151,9 +1183,7 @@ function MemoryGame() {
                     <span className="bg-violet-500 rounded-sm" />
                     <span className="bg-cyan-400 rounded-sm" />
                   </div>
-                  <span className="text-[9px] text-gray-500 tracking-[0.2em] mt-2">
-                    FLIP
-                  </span>
+                  <span className="text-[9px] text-gray-500 tracking-[0.2em] mt-2">FLIP</span>
                 </div>
               )}
 
@@ -1169,19 +1199,13 @@ function MemoryGame() {
 
       {won && (
         <div className="mt-6 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 p-5 text-center">
-          <p className="text-emerald-300 text-2xl font-black">
-            ALL PAIRS FOUND!
-          </p>
-          <p className="text-gray-300 text-sm mt-2">
-            {moves} moves · {time}
-          </p>
+          <p className="text-emerald-300 text-2xl font-black">ALL PAIRS FOUND!</p>
+          <p className="text-gray-300 text-sm mt-2">{moves} moves · {time}</p>
         </div>
       )}
 
       <div className="text-center mt-7">
-        <ActionButton onClick={restart}>
-          ↻ NEW IMAGE SEQUENCE
-        </ActionButton>
+        <ActionButton onClick={restart}>↻ NEW IMAGE SEQUENCE</ActionButton>
       </div>
 
       <p className="text-center text-gray-600 text-xs mt-4">
@@ -1341,42 +1365,49 @@ export default function Home() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           {filtered.map((game) => (
-            <button
+            <div
               key={game.id}
-              onClick={() => {
-                setActive(game.id);
-                playArcadeSound("click");
-              }}
-              className="group text-left relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[#10121a] hover:border-cyan-400/40 transition-all duration-300 hover:-translate-y-1"
+              className="group relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[#10121a] hover:border-cyan-400/40 transition-all duration-300 hover:-translate-y-1"
             >
               <div className={`absolute inset-0 bg-gradient-to-br ${game.color} opacity-70`} />
 
-              <div className="relative p-6 sm:p-8 flex items-center gap-6 min-h-[205px]">
-                <div className="w-24 h-24 sm:w-28 sm:h-28 shrink-0 rounded-2xl bg-black/30 border border-white/10 flex items-center justify-center text-6xl group-hover:scale-110 transition duration-300">
-                  {game.icon}
-                </div>
+              <div className="relative p-5 sm:p-6 flex items-center gap-4 min-h-[205px]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActive(game.id);
+                    playArcadeSound("click");
+                  }}
+                  className="flex-1 min-w-0 text-left flex items-center gap-5 sm:gap-6"
+                >
+                  <div className="w-20 h-20 sm:w-28 sm:h-28 shrink-0 rounded-2xl bg-black/30 border border-white/10 flex items-center justify-center text-5xl sm:text-6xl group-hover:scale-110 transition duration-300">
+                    {game.icon}
+                  </div>
 
-                <div className="min-w-0">
-                  <span className="text-[9px] tracking-[0.25em] font-black text-cyan-300">
-                    {game.tag}
-                  </span>
-                  <h3 className="text-2xl sm:text-3xl font-black mt-2">
-                    {game.title}
-                  </h3>
-                  <p className="text-gray-400 text-xs mt-1 tracking-wider">
-                    {game.category}
-                  </p>
-                  <p className="text-gray-400 text-sm mt-3 leading-5">
-                    {game.description}
-                  </p>
-                  <p className="text-white text-xs font-black mt-5 group-hover:text-cyan-300 transition">
-                    PLAY NOW <span className="ml-1">↗</span>
-                  </p>
-                </div>
+                  <div className="min-w-0">
+                    <span className="text-[9px] tracking-[0.25em] font-black text-cyan-300">
+                      {game.tag}
+                    </span>
+                    <h3 className="text-2xl sm:text-3xl font-black mt-2">
+                      {game.title}
+                    </h3>
+                    <p className="text-gray-400 text-xs mt-1 tracking-wider">
+                      {game.category}
+                    </p>
+                    <p className="text-gray-400 text-sm mt-3 leading-5">
+                      {game.description}
+                    </p>
+                    <p className="text-white text-xs font-black mt-5 group-hover:text-cyan-300 transition">
+                      PLAY NOW <span className="ml-1">↗</span>
+                    </p>
+                  </div>
+                </button>
+
+                <GameStarButton gameId={game.id as GameId} />
               </div>
 
               <div className="absolute bottom-0 left-0 w-0 h-[2px] bg-cyan-400 group-hover:w-full transition-all duration-500" />
-            </button>
+            </div>
           ))}
         </div>
 

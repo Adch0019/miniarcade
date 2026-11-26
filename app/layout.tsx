@@ -1,22 +1,28 @@
-
 import type { Metadata } from "next";
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MINIARCADE - Play Free Online Games",
+  title: "MINIARCADE | Play Free Online Games",
   description:
-    "Play free online games at MINIARCADE! Enjoy Snake, Tic Tac Toe, 2048 and Memory Match. Instant browser gaming, no downloads required.",
+    "Play free online games including Snake, Tic Tac Toe, 2048 and Memory Lab on MINIARCADE.",
   keywords: [
     "free online games",
-    "browser games",
-    "play online games",
     "Snake game",
-    "2048 game",
     "Tic Tac Toe",
-    "Memory Match",
+    "2048 game",
+    "Memory game",
     "MINIARCADE",
   ],
-  robots: {
-    index: true,
-    follow: true,
-  },
 };
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
