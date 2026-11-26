@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -158,7 +157,10 @@ function ActionButton({
 
 type GameId = "snake" | "tic" | "2048" | "memory";
 
-const STAR_API = process.env.NEXT_PUBLIC_ARCADE_API_URL || "";
+/* YOUR CLOUDFLARE WORKER URL */
+const STAR_API =
+  process.env.NEXT_PUBLIC_ARCADE_API_URL ||
+  "https://plain-cell-72bc.adarshch120.workers.dev";
 
 function getVisitorId() {
   const key = "miniarcade-visitor-id";
@@ -187,30 +189,33 @@ function GameStarButton({ gameId }: { gameId: GameId }) {
     let cancelled = false;
 
     async function loadStars() {
-      if (!STAR_API) {
-        setLoading(false);
-        setError("API not configured");
-        return;
-      }
-
       try {
         const visitorId = getVisitorId();
+
         const response = await fetch(
-          `${STAR_API.replace(/\/$/, "")}/api/stars?visitorId=${encodeURIComponent(visitorId)}`
+          `${STAR_API.replace(/\/$/, "")}/api/stars?visitorId=${encodeURIComponent(visitorId)}`,
+          { cache: "no-store" }
         );
 
-        if (!response.ok) throw new Error("Could not load stars");
+        if (!response.ok) {
+          throw new Error("Could not load stars");
+        }
 
         const data = await response.json();
 
         if (!cancelled) {
-          setCount(Number(data.counts?.[gameId] || 0));
+          setCount(Number(data.counts?.[gameId] ?? 0));
           setStarred(Boolean(data.starred?.[gameId]));
+          setError("");
         }
       } catch {
-        if (!cancelled) setError("Stars unavailable");
+        if (!cancelled) {
+          setError("Stars unavailable");
+        }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     }
 
@@ -222,7 +227,7 @@ function GameStarButton({ gameId }: { gameId: GameId }) {
   }, [gameId]);
 
   async function addStar() {
-    if (starred || saving || !STAR_API) return;
+    if (starred || saving || loading) return;
 
     setSaving(true);
     setError("");
@@ -234,12 +239,19 @@ function GameStarButton({ gameId }: { gameId: GameId }) {
         `${STAR_API.replace(/\/$/, "")}/api/stars`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ gameId, visitorId }),
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            gameId,
+            visitorId,
+          }),
         }
       );
 
-      if (!response.ok) throw new Error("Could not save star");
+      if (!response.ok) {
+        throw new Error("Could not save star");
+      }
 
       const data = await response.json();
 
@@ -257,12 +269,10 @@ function GameStarButton({ gameId }: { gameId: GameId }) {
       <button
         type="button"
         onClick={addStar}
-        disabled={starred || saving || loading || !STAR_API}
+        disabled={starred || saving || loading}
         aria-label={starred ? "Already starred" : "Star this game"}
         title={
-          !STAR_API
-            ? "Configure the Cloudflare API URL"
-            : starred
+          starred
             ? "You already starred this game"
             : "Star this game"
         }
@@ -275,10 +285,12 @@ function GameStarButton({ gameId }: { gameId: GameId }) {
         <span className="block text-xl leading-5">
           {starred ? "★" : "☆"}
         </span>
+
         <span className="block text-[10px] font-bold mt-1">
           {loading ? "..." : saving ? "..." : count}
         </span>
       </button>
+
       <span className="text-[9px] text-gray-500">
         {error || (starred ? "STARRED" : "STARS")}
       </span>
